@@ -10,6 +10,7 @@ use m10_sdk::{sdk, Ed25519, LedgerClient, Signer, TransactionExt};
 use rust_decimal::Decimal;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::{debug, error};
 
 const FX_SWAP_ACTION: &str = "m10.fx.swap";
 
@@ -73,6 +74,7 @@ impl Ledger {
             for txn in transactions {
                 if let Some(Data::InvokeAction(action)) = txn.data() {
                     if let Ok(event) = serde_json::from_slice::<Event>(&action.payload) {
+                        debug!(?event);
                         match event {
                             Event::Request(request) => {
                                 let rate = get_fx_rate(&db, &request)?;
@@ -83,7 +85,7 @@ impl Ledger {
                                     )
                                     .await
                                 {
-                                    eprintln!("Could not publish quote: {}", err);
+                                    error!("Could not publish quote: {}", err);
                                 }
                             }
                             Event::Quote(_) => {}
