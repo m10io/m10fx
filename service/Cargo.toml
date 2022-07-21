@@ -1,0 +1,11 @@
+[package]
+name = "m10-fx"
+version = "0.1.0"
+edition = "2021"
+authors = [ "Sam De Roeck <sadroeck@gmail.com>"]
+publish = false
+
+[dependencies]
+m10-sdk = "0.21"
+rust_decimal = "1.25"
+tokio = { version = "1.20", features = ["rt-multi-thread"] }

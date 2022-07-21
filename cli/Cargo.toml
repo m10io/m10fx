@@ -1,0 +1,11 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2021"
+authors = [ "Sam De Roeck <sadroeck@gmail.com>"]
+publish = false
+
+[dependencies]
+clap = { version = "3.2", features = ["derive"] }
+m10-sdk = "0.21"
+rust_decimal = "1.25"
