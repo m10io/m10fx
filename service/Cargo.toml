@@ -9,6 +9,7 @@ publish = false
 anyhow = "1.0"
 config = "0.13"
 futures-util = "0.3"
+hex = "0.4"
 m10-sdk = "0.21"
 serde = "1.0"
 serde_json = "1.0"

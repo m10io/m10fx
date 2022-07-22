@@ -1,0 +1,15 @@
+address = "https://develop.m10.net"
+[liquidity.EUR]
+account = "04000000002c00000000000000000001"
+base_rate = "0.9"
+key_pair = "./liquidity.pkcs8"
+
+[liquidity.USD]
+account = "00000000004400000000000000000001"
+base_rate = "1"
+key_pair = "./liquidity.pkcs8"
+
+[liquidity.BTC]
+account = "05000000001000000000000000000001"
+base_rate = "0.000043"
+key_pair = "./liquidity.pkcs8"

@@ -16,11 +16,17 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let config = config::parse()?;
+    let address = config.address;
 
     let ledgers = config
-        .ledgers
+        .liquidity
         .into_iter()
-        .map(|(currency, config)| Ok((currency, Ledger::new(config)?)))
+        .map(|(currency, config)| {
+            Ok((
+                currency.to_lowercase(),
+                Ledger::new(address.clone(), currency, config)?,
+            ))
+        })
         .collect::<anyhow::Result<HashMap<CurrencyCode, Ledger>>>()?;
 
     let ledger_db = Arc::new(ledgers);

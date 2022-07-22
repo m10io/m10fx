@@ -1,4 +1,3 @@
-use crate::CurrencyCode;
 use m10_sdk::account::AccountId;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -12,17 +11,9 @@ pub enum Event {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Request {
-    pub from: LedgerAccount,
-    pub to: LedgerAccount,
+    pub from: AccountId,
+    pub to: AccountId,
     pub amount: Decimal,
-    pub upper_limit: Decimal,
-    pub lower_limit: Decimal,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct LedgerAccount {
-    pub account: AccountId,
-    pub currency: CurrencyCode,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

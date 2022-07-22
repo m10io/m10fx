@@ -198,9 +198,20 @@ dependencies = [
 name = "cli"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
+ "fastrand",
+ "futures-util",
+ "hex",
+ "m10-fx",
  "m10-sdk",
  "rust_decimal",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -664,6 +675,7 @@ dependencies = [
  "anyhow",
  "config",
  "futures-util",
+ "hex",
  "m10-sdk",
  "rust_decimal",
  "serde",
@@ -709,7 +721,7 @@ dependencies = [
  "serde_with",
  "thiserror",
  "tonic",
- "uuid",
+ "uuid 0.8.2",
 ]
 
 [[package]]
@@ -1807,6 +1819,15 @@ checksum = "bc5cf98d8186244414c848017f0e2676b3fcb46807f6668a97dfe67359a3c4b7"
 dependencies = [
  "getrandom",
  "serde",
+]
+
+[[package]]
+name = "uuid"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd6469f4314d5f1ffec476e05f17cc9a78bc7a27a6a857842170bdf8d6f98d2f"
+dependencies = [
+ "getrandom",
 ]
 
 [[package]]

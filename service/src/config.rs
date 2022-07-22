@@ -1,39 +1,37 @@
-use config::{Environment, FileFormat};
-use m10_sdk::account::AccountId;
+use config::Environment;
 use rust_decimal::Decimal;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 pub type CurrencyCode = String;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
-    pub ledgers: HashMap<CurrencyCode, LedgerConfig>,
+    /// Ledger address, e.g. https://develop.m10.net
+    #[serde(default = "default_address")]
+    pub address: String,
+    /// Liquidity config
+    pub liquidity: HashMap<CurrencyCode, LiquidityConfig>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct LedgerConfig {
-    /// Ledger address, e.g. https://develop.m10.net
-    pub address: String,
-    /// Currency account
-    pub root_account: AccountId,
+fn default_address() -> String {
+    "https://develop.m10.net".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LiquidityConfig {
     /// Account ID of the liquidity provider for that currency
-    pub liquidity_account: AccountId,
+    pub account: String,
     /// Currency value in base amount (~ USD)
     pub base_rate: Decimal,
+    /// Liquidity key pair
+    pub key_pair: PathBuf,
 }
 
 pub fn parse() -> Result<Config, config::ConfigError> {
     let config = config::Config::builder()
-        .add_source(config::File::from_str(
-            "/etc/m10/config.toml",
-            FileFormat::Toml,
-        ))
-        .add_source(config::File::from_str(
-            "/root/.config/m10/config.toml",
-            FileFormat::Toml,
-        ))
-        .add_source(config::File::from_str("./config.toml", FileFormat::Toml))
+        .add_source(config::File::from(Path::new("./config.toml")))
         .add_source(Environment::with_prefix("APP"))
         .build()?;
     config.try_deserialize()
