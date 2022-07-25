@@ -31,16 +31,24 @@ async fn main() -> anyhow::Result<()> {
 
     let ledger_db = Arc::new(ledgers);
 
-    let futures = ledger_db
-        .iter()
-        .map(|(currency, ledger)| {
+    let mut futures = vec![];
+    for (currency, ledger) in ledger_db.iter() {
+        // Observe actions
+        futures.push(tokio::spawn(
             ledger
                 .clone()
                 .observe_requests(ledger_db.clone())
-                .instrument(info_span!("ledger",%currency))
-        })
-        .map(tokio::spawn)
-        .collect::<Vec<_>>();
+                .instrument(info_span!("actions",%currency)),
+        ));
+
+        // Observe transfers
+        futures.push(tokio::spawn(
+            ledger
+                .clone()
+                .observe_transfer(ledger_db.clone())
+                .instrument(info_span!("transfers",%currency)),
+        ));
+    }
 
     select_all(futures).await.0??;
 

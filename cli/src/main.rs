@@ -2,29 +2,29 @@ use crate::sdk::rule::Verb;
 use crate::sdk::transaction_data::Data;
 use crate::sdk::value::Value;
 use crate::sdk::{
-    Account, DocumentOperations, GetAccountRequest, ListTransferRequest, ObserveActionsRequest,
-    Operation, Role, RoleBinding, Rule, TransactionResponse, TransferStep,
+    Account, DocumentOperations, GetAccountRequest, ListActionsRequest, ObserveActionsRequest,
+    Operation, Role, RoleBinding, Rule, TransactionResponse, TransferStep, TxId,
 };
 use clap::Parser;
 use futures_util::StreamExt;
 use m10_fx::config::{Config, LiquidityConfig};
-use m10_fx::event::{Event, Request};
-use m10_fx::FX_SWAP_ACTION;
+use m10_fx::event::{Event, Execute, Quote, Request};
+use m10_fx::{FX_SWAP_ACTION, FX_SWAP_METADATA};
 use m10_sdk::account::AccountId;
 use m10_sdk::client::Channel;
 use m10_sdk::prost::bytes::Bytes;
+use m10_sdk::prost::Any;
 use m10_sdk::{sdk, Collection, Ed25519, LedgerClient, Signer, TransactionExt};
 use rust_decimal::prelude::One;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::iter::once;
 use std::path::PathBuf;
-use std::time::Duration;
-use tracing::{info, info_span, Instrument};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{error, info, info_span, Instrument};
 use uuid::Uuid;
 
 const DEFAULT_LEDGER_URL: &str = "https://develop.m10.net";
-const EXECUTE_INTERVAL: Duration = Duration::from_secs(15);
 
 const TEST_ROOT_KEY: &str = "3053020101300506032b6570042204207cabfa6e59e20cbd271a0c7\
     60aeb5ff104f2e873923df3b56c76f33271a52b6aa12303210000230a56\
@@ -44,7 +44,7 @@ struct Command {
 enum RPC {
     Setup(Setup),
     Initiate(Initiate),
-    Execute(Execute),
+    Execute(ExecuteQuote),
 }
 
 #[derive(clap::Args, Debug)]
@@ -71,7 +71,7 @@ struct Initiate {
 
 #[derive(clap::Args, Debug)]
 #[clap(author, version, about, long_about = None)]
-struct Execute {
+struct ExecuteQuote {
     #[clap(short, long)]
     key_pair: String,
     #[clap(short, long, value_parser)]
@@ -121,26 +121,72 @@ async fn main() -> anyhow::Result<()> {
             info!("{:?}", execute);
             let key_pair = Ed25519::load_key_pair(&execute.key_pair)?;
             let context_id = hex::decode(&execute.context_id)?;
-            let req = ListTransferRequest {
-                limit: 10,
-                include_child_accounts: false,
-                min_tx_id: 0,
-                max_tx_id: 0,
-                filter: Some(sdk::list_transfer_request::Filter::ContextId(
-                    context_id.clone(),
-                )),
+
+            // Find the last transaction in the context
+            let req = key_pair
+                .sign_request(ListActionsRequest {
+                    name: FX_SWAP_ACTION.to_string(),
+                    limit: 10,
+                    min_tx_id: 0,
+                    max_tx_id: u64::MAX,
+                    filter: Some(sdk::list_actions_request::Filter::ContextId(
+                        context_id.clone(),
+                    )),
+                })
+                .await?;
+            let sdk::Actions { actions } = client.list_actions(req).await?;
+            let action = actions
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("No quote found for context"))?;
+            let quote = match serde_json::from_slice(&action.payload)? {
+                Event::Quote(quote) => quote,
+                Event::Request(_) => panic!("Request hasn't been quoted"),
+                Event::Execute(_) | Event::Completed => {
+                    panic!("Already executed");
+                }
+            };
+            let tx_id = action.tx_id;
+
+            let req = ObserveActionsRequest {
+                starting_from: Some(TxId { tx_id: tx_id + 1 }),
+                name: FX_SWAP_ACTION.to_string(),
+                involves_accounts: vec![quote.request.from.to_be_bytes().to_vec()],
             };
             let signed = key_pair.sign_request(req).await?;
 
-            try_execute(key_pair, client.clone(), execute)
+            try_execute(key_pair, client.clone(), execute, quote, context_id.clone())
                 .instrument(info_span!("execute"))
                 .await?;
-            loop {
-                let sdk::FinalizedTransfers { transfers } =
-                    client.list_transfers(signed.clone()).await?;
 
-                tokio::time::sleep(EXECUTE_INTERVAL).await;
+            // Wait for confirmation
+            info!("Waiting for swap confirmation");
+            let mut transfers = client.observe_actions(signed).await?;
+            while let Some(Ok(sdk::FinalizedTransactions { transactions })) = transfers.next().await
+            {
+                for txn in transactions {
+                    if txn.response.as_ref().unwrap().error.is_some()
+                        || txn
+                            .request
+                            .as_ref()
+                            .map(|req| req.context_id != context_id)
+                            .unwrap_or(false)
+                    {
+                        continue;
+                    }
+
+                    if let Some(Data::InvokeAction(action)) = txn.data() {
+                        let event = serde_json::from_slice(&action.payload);
+                        if let Ok(Event::Completed) = event {
+                            info!("Swap completed");
+                            return Ok(());
+                        } else {
+                            error!("Invalid event: {:?}", event);
+                        }
+                    }
+                }
             }
+
+            Ok(())
         }
     }
 }
@@ -166,6 +212,9 @@ async fn try_setup(
         match client.get_indexed_account(req).await {
             Ok(account) => {
                 let currency = &account.instrument.as_ref().unwrap().code;
+                if !setup.currencies.contains(&currency.to_lowercase()) {
+                    continue;
+                }
                 info!(
                     account_id = %hex::encode(&account.id), %currency, "Found account"
                 );
@@ -227,6 +276,7 @@ async fn try_setup(
                 )
                 .instrument(info_span!("Bob"))
                 .await?;
+                info!(account_id = %hex::encode(account_id.to_be_bytes()), "Created Bob EUR account");
             }
 
             Result::<(), anyhow::Error>::Ok(())
@@ -385,15 +435,53 @@ async fn try_initiate(
         }
     }
 
+    info!(context_id = %hex::encode(context_id));
+
     Ok(())
 }
 
 async fn try_execute(
     key_pair: impl Signer,
-    client: LedgerClient,
-    execute: Execute,
+    mut client: LedgerClient,
+    execute: ExecuteQuote,
+    quote: Quote,
+    context_id: Vec<u8>,
 ) -> anyhow::Result<()> {
-    todo!()
+    info!(
+        "Transferring from {} -> {}",
+        quote.request.from, quote.intermediary
+    );
+    let amount = quote.rate * quote.request.amount;
+    let req = key_pair
+        .sign_request(LedgerClient::transaction_request(
+            sdk::CreateTransfer {
+                transfer_steps: vec![TransferStep {
+                    from_account_id: quote.request.from.to_be_bytes().to_vec(),
+                    to_account_id: quote.intermediary.to_be_bytes().to_vec(),
+                    amount: amount.try_into()?,
+                    metadata: vec![Any {
+                        type_url: FX_SWAP_METADATA.to_string(),
+                        value: serde_json::to_vec(&Event::Execute(Execute {
+                            request: quote.request,
+                            valid_until: (SystemTime::now()
+                                + Duration::from_secs(execute.valid_for.unwrap_or(300)))
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                            upper_limit: (Decimal::one() + execute.margin) * quote.rate,
+                            lower_limits: (Decimal::one() - execute.margin) * quote.rate,
+                        }))?,
+                    }],
+                }],
+            },
+            context_id.clone(),
+        ))
+        .await
+        .unwrap();
+
+    let tx_id = client.create_transaction(req).await?.tx_error()?.tx_id;
+    info!("Transfer success txId={}", tx_id);
+    Ok(())
 }
 
 fn root_key() -> Ed25519 {
