@@ -2,7 +2,6 @@ use crate::config::LiquidityConfig;
 use crate::event::{Event, Execute, Quote, Request};
 use crate::LedgerDB;
 use futures_util::StreamExt;
-use m10_fx::{FX_SWAP_ACTION, FX_SWAP_METADATA};
 use m10_sdk::account::AccountId;
 use m10_sdk::client::Channel;
 use m10_sdk::sdk::transaction_data::Data;
@@ -12,6 +11,7 @@ use m10_sdk::sdk::{
 };
 use m10_sdk::{sdk, Ed25519, LedgerClient, Signer, TransactionExt};
 use rust_decimal::Decimal;
+use service::{FX_SWAP_ACTION, FX_SWAP_METADATA};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tracing::{error, info, info_span, Instrument};

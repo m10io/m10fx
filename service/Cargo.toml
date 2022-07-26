@@ -1,5 +1,5 @@
 [package]
-name = "m10-fx"
+name = "service"
 version = "0.1.0"
 edition = "2021"
 authors = [ "Sam De Roeck <sadroeck@gmail.com>"]
