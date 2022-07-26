@@ -250,7 +250,7 @@ async fn try_setup(
 
             liquidity_accounts.insert(currency.clone(), account_id);
 
-            if currency.to_lowercase() == "usd" {
+            if currency.to_lowercase() == setup.currencies[0].to_lowercase() {
                 // Create an account for alice
                 let account_id = create_account(
                     &mut client,
@@ -265,7 +265,7 @@ async fn try_setup(
                 info!(account_id = %hex::encode(account_id.to_be_bytes()), "Created Alice USD account");
             }
 
-            if currency.to_lowercase() == "eur" {
+            if currency.to_lowercase() == setup.currencies[1].to_lowercase() {
                 let account_id = create_account(
                     &mut client,
                     &key_pair,
