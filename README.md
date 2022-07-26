@@ -20,6 +20,10 @@ Liquidity is provided as a static exchange rate for demo purposes, but can be pr
     * `sudo apt-get install libssl-dev libudev-dev pkg-config zlib1g-dev llvm clang cmake make libprotobuf-dev protobuf-compiler`
 * Install the [Rust toolchain](https://www.rust-lang.org/tools/install)
     * e.g. `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+* Note: optionally a Dockerfile is provided for a ready to build and use development environment (give it plenty of resources!)
+  * `docker build . --tag m10fx:latest -f ./Dockerfile`
+  * `docker run --name m10fx --rm -it -v "$(pwd)":/m10fx m10fx`
+  * `/> cd m10fx && cargo build --all-targets --release`
 
 ## Build & Deploy
 
@@ -58,7 +62,7 @@ See `Setup` below on to generate a configuration file (~ `config.toml`).
 We'll need to set up a few identities before we interact with the program using the `cli`. 
 
 ```shell
-cargo run --bin --release cli -- --url https://develop.m10.net  setup -c eur -c usd -c btc
+cargo run --release --bin cli -- --url https://develop.m10.net  setup -c eur -c usd -c btc
 ```
 
 Using the `setup` command & an M10 ledger deployment, e.g. `develop.m10.net`, we will create a set of liquidity providers
