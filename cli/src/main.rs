@@ -262,7 +262,7 @@ async fn try_setup(
                 )
                 .instrument(info_span!("Alice"))
                 .await?;
-                info!(account_id = %hex::encode(account_id.to_be_bytes()), "Created Alice USD account");
+                info!(account_id = %hex::encode(account_id.to_be_bytes()), "Created Alice {} account", currency);
             }
 
             if currency.to_lowercase() == setup.currencies[1].to_lowercase() {
@@ -276,7 +276,7 @@ async fn try_setup(
                 )
                 .instrument(info_span!("Bob"))
                 .await?;
-                info!(account_id = %hex::encode(account_id.to_be_bytes()), "Created Bob EUR account");
+                info!(account_id = %hex::encode(account_id.to_be_bytes()), "Created Bob {} account", currency);
             }
 
             Result::<(), anyhow::Error>::Ok(())
