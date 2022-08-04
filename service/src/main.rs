@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
         futures.push(tokio::spawn(
             ledger
                 .clone()
-                .observe_requests(ledger_db.clone())
+                .observe_actions(ledger_db.clone())
                 .instrument(info_span!("actions",%currency)),
         ));
 
@@ -45,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
         futures.push(tokio::spawn(
             ledger
                 .clone()
-                .observe_transfer(ledger_db.clone())
+                .observe_transfers(ledger_db.clone())
                 .instrument(info_span!("transfers",%currency)),
         ));
     }

@@ -154,11 +154,7 @@ Using the `cli` one of these users can interact with the fx program. In order fo
 invoke the following command:
 
 ```shell
-cargo run --bin cli initiate \
-  --amount 1000 \
-  --from 00000000004a00000000000000000001 \ 
-  --to 04000000003200000000000000000001 \ 
-  --key-pair ./alice.pkcs8
+cargo run --bin cli initiate --amount 1000 --from 00000000004a00000000000000000001  --to 04000000003200000000000000000001  --key-pair ./alice.pkcs8
 ```
 
 This requests a quote for an FX swap of `10.00 USD` from `Alice`'s account to the equivalent in `EUR` for `Bob`, e.g.
@@ -188,11 +184,7 @@ The quote is attached to a ledger context ID `713f6414ca45d04f`. This allows mul
 An FX swap can be executed using the `execute` command of the `cli`, e.g.
 
 ```shell
-cargo run --bin cli -- execute \
- --key-pair ./alice.pkcs8
- --margin 0.10
- --valid-for 300
- --context-id 713f6414ca45d04f
+cargo run --bin cli -- execute --key-pair ./alice.pkcs8 --margin 0.10 --valid-for 300 --context-id 713f6414ca45d04f
 ```
 
 This executes a previous quote identified by the `context-id` parameter as returned at the end of the `initiate` 

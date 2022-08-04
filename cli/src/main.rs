@@ -1,17 +1,17 @@
 use crate::sdk::rule::Verb;
-use crate::sdk::transaction_data::Data;
 use crate::sdk::value::Value;
-use crate::sdk::{
-    Account, DocumentOperations, GetAccountRequest, ListActionsRequest, ObserveActionsRequest,
-    Operation, Role, RoleBinding, Rule, TransactionResponse, TransferStep, TxId,
-};
+use crate::sdk::{Account, Role, RoleBinding, Rule};
 use clap::Parser;
 use futures_util::StreamExt;
 use m10_sdk::account::AccountId;
 use m10_sdk::client::Channel;
+use m10_sdk::client::M10Client;
+use m10_sdk::error::M10Error;
 use m10_sdk::prost::bytes::Bytes;
-use m10_sdk::prost::Any;
-use m10_sdk::{sdk, Collection, Ed25519, LedgerClient, Signer, TransactionExt};
+use m10_sdk::{
+    sdk, AccountFilter, ActionBuilder, ActionsFilter, Collection, DocumentBuilder, Ed25519, Signer,
+    StepBuilder, TransferBuilder, TxnFilter,
+};
 use rust_decimal::prelude::One;
 use rust_decimal::Decimal;
 use service::config::{Config, LiquidityConfig};
@@ -62,9 +62,9 @@ struct Initiate {
     #[clap(short, long)]
     key_pair: String,
     #[clap(short, long)]
-    from: String,
+    from: AccountId,
     #[clap(short, long, value_parser)]
-    to: String,
+    to: AccountId,
     #[clap(short, long, value_parser)]
     amount: u64,
 }
@@ -96,7 +96,6 @@ async fn main() -> anyhow::Result<()> {
     let channel = Channel::from_shared(url)?
         .timeout(Duration::from_secs(15))
         .connect_lazy()?;
-    let mut client = LedgerClient::new(channel);
 
     match command {
         RPC::Setup(setup) => {
@@ -106,35 +105,32 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 root_key()
             };
-            try_setup(key_pair, client, setup)
+            let client = M10Client::new(key_pair, channel);
+            try_setup(client, setup)
                 .instrument(info_span!("setup"))
                 .await
         }
         RPC::Initiate(initiate) => {
             info!("{:?}", initiate);
             let key_pair = Ed25519::load_key_pair(&initiate.key_pair)?;
-            try_initiate(key_pair, client, initiate)
+            let client = M10Client::new(key_pair, channel);
+            try_initiate(client, initiate)
                 .instrument(info_span!("initiate"))
                 .await
         }
         RPC::Execute(execute) => {
             info!("{:?}", execute);
             let key_pair = Ed25519::load_key_pair(&execute.key_pair)?;
+            let client = M10Client::new(key_pair, channel);
             let context_id = hex::decode(&execute.context_id)?;
 
             // Find the last transaction in the context
-            let req = key_pair
-                .sign_request(ListActionsRequest {
-                    name: FX_SWAP_ACTION.to_string(),
-                    limit: 10,
-                    min_tx_id: 0,
-                    max_tx_id: u64::MAX,
-                    filter: Some(sdk::list_actions_request::Filter::ContextId(
-                        context_id.clone(),
-                    )),
-                })
+            let actions = client
+                .list_actions(TxnFilter::<ActionsFilter>::by_context_id(
+                    FX_SWAP_ACTION.to_string(),
+                    context_id.clone(),
+                ))
                 .await?;
-            let sdk::Actions { actions } = client.list_actions(req).await?;
             let action = actions
                 .first()
                 .ok_or_else(|| anyhow::anyhow!("No quote found for context"))?;
@@ -145,43 +141,33 @@ async fn main() -> anyhow::Result<()> {
                     panic!("Already executed");
                 }
             };
-            let tx_id = action.tx_id;
 
-            let req = ObserveActionsRequest {
-                starting_from: Some(TxId { tx_id: tx_id + 1 }),
-                name: FX_SWAP_ACTION.to_string(),
-                involves_accounts: vec![quote.request.from.to_be_bytes().to_vec()],
-            };
-            let signed = key_pair.sign_request(req).await?;
+            let mut stream = client
+                .observe_actions(
+                    AccountFilter::name(FX_SWAP_ACTION.to_string())
+                        .involves(quote.request.from)
+                        .starting_from(action.tx_id + 1),
+                )
+                .await?;
 
-            try_execute(key_pair, client.clone(), execute, quote, context_id.clone())
+            try_execute(&client, execute, quote, context_id.clone())
                 .instrument(info_span!("execute"))
                 .await?;
 
             // Wait for confirmation
             info!("Waiting for swap confirmation");
-            let mut transfers = client.observe_actions(signed).await?;
-            while let Some(Ok(sdk::FinalizedTransactions { transactions })) = transfers.next().await
-            {
-                for txn in transactions {
-                    if txn.response.as_ref().unwrap().error.is_some()
-                        || txn
-                            .request
-                            .as_ref()
-                            .map(|req| req.context_id != context_id)
-                            .unwrap_or(false)
-                    {
+            while let Some(Ok(actions)) = stream.next().await {
+                for action in actions {
+                    if action.context_id != context_id {
                         continue;
                     }
 
-                    if let Some(Data::InvokeAction(action)) = txn.data() {
-                        let event = serde_json::from_slice(&action.payload);
-                        if let Ok(Event::Completed) = event {
-                            info!("Swap completed");
-                            return Ok(());
-                        } else {
-                            error!("Invalid event: {:?}", event);
-                        }
+                    let event = serde_json::from_slice(&action.payload);
+                    if let Ok(Event::Completed) = event {
+                        info!("Swap completed");
+                        return Ok(());
+                    } else {
+                        error!("Invalid event: {:?}", event);
                     }
                 }
             }
@@ -191,11 +177,7 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn try_setup(
-    key_pair: impl Signer,
-    mut client: LedgerClient,
-    setup: Setup,
-) -> anyhow::Result<()> {
+async fn try_setup(client: M10Client<Ed25519>, setup: Setup) -> anyhow::Result<()> {
     let liquidity_key = Ed25519::new_key_pair(Some("./liquidity.pkcs8"))?;
     let alice_key = Ed25519::new_key_pair(Some("./alice.pkcs8"))?;
     let bob_key = Ed25519::new_key_pair(Some("./bob.pkcs8"))?;
@@ -204,30 +186,23 @@ async fn try_setup(
     // Scan for all currencies
     for i in 0..256 {
         let root_id = AccountId::from_root_account_index(i)?;
-        let req = key_pair
-            .sign_request(GetAccountRequest {
-                id: root_id.to_be_bytes().to_vec(),
-            })
-            .await?;
-        match client.get_indexed_account(req).await {
+        match client.get_account(root_id).await {
             Ok(account) => {
-                let currency = &account.instrument.as_ref().unwrap().code;
-                if !setup.currencies.contains(&currency.to_lowercase()) {
+                let currency = account.code.to_lowercase();
+                if !setup.currencies.contains(&currency) {
                     continue;
                 }
-                info!(
-                    account_id = %hex::encode(&account.id), %currency, "Found account"
-                );
-                if setup.currencies.contains(&currency.to_lowercase()) {
+                info!(%account.id, %currency, "Found account");
+                if setup.currencies.contains(&currency) {
                     accounts.push(account);
                 }
             }
-            Err(status) if status.code() as usize == 5 => {
+            Err(M10Error::Status(status)) if status.code() as usize == 5 => {
                 // NOT FOUND
                 break;
             }
             Err(err) => {
-                panic!("Could not retrieve account: {}", err);
+                panic!("Could not retrieve account: {:?}", err);
             }
         }
     }
@@ -235,12 +210,11 @@ async fn try_setup(
     // Create accounts & account docs for all currencies
     let mut liquidity_accounts = HashMap::new();
     for account in accounts {
-        let currency = account.instrument.unwrap().code;
+        let currency = account.code;
         async {
             let account_id = create_account(
-                &mut client,
-                &key_pair,
-                &account.id,
+                &client,
+                account.id,
                 liquidity_key.public_key(),
                 "fx-liquidity".to_string(),
                 10_000_000,
@@ -253,9 +227,8 @@ async fn try_setup(
             if currency.to_lowercase() == setup.currencies[0].to_lowercase() {
                 // Create an account for alice
                 let account_id = create_account(
-                    &mut client,
-                    &key_pair,
-                    &account.id,
+                    &client,
+                    account.id,
                     alice_key.public_key(),
                     "alice".to_string(),
                     10_000_000,
@@ -267,9 +240,8 @@ async fn try_setup(
 
             if currency.to_lowercase() == setup.currencies[1].to_lowercase() {
                 let account_id = create_account(
-                    &mut client,
-                    &key_pair,
-                    &account.id,
+                    &client,
+                    account.id,
                     bob_key.public_key(),
                     "bob".to_string(),
                     0,
@@ -291,40 +263,32 @@ async fn try_setup(
 
     // Setup role & role-binding
     let role_id = Uuid::new_v4();
-    sign_and_execute(
-        &mut client,
-        &key_pair,
-        DocumentOperations {
-            operations: vec![Operation::insert(Role {
-                id: Bytes::copy_from_slice(&role_id.into_bytes()),
-                owner: Bytes::copy_from_slice(liquidity_key.public_key()),
-                name: "m10.fx.liquidity".to_string(),
-                rules: vec![
-                    can_read_and_transact_ledger_accounts(liquidity_accounts.values()),
-                    can_read_and_transact_accounts(liquidity_accounts.values()),
-                    can_read_all_ledger_accounts(),
-                    can_read_all_accounts(),
-                ],
-            })],
-        },
-    )
-    .await?;
-    sign_and_execute(
-        &mut client,
-        &key_pair,
-        DocumentOperations {
-            operations: vec![Operation::insert(RoleBinding {
-                id: Bytes::copy_from_slice(role_id.as_bytes()),
-                owner: Bytes::copy_from_slice(liquidity_key.public_key()),
-                name: "m10.fx.liquidity".to_string(),
-                role: Bytes::copy_from_slice(role_id.as_bytes()),
-                subjects: vec![Bytes::copy_from_slice(liquidity_key.public_key())],
-                expressions: vec![],
-                is_universal: false,
-            })],
-        },
-    )
-    .await?;
+    client
+        .documents(
+            DocumentBuilder::default()
+                .insert(Role {
+                    id: Bytes::copy_from_slice(&role_id.into_bytes()),
+                    owner: Bytes::copy_from_slice(liquidity_key.public_key()),
+                    name: "m10.fx.liquidity".to_string(),
+                    rules: vec![
+                        can_read_and_transact_ledger_accounts(liquidity_accounts.values().copied()),
+                        can_read_and_transact_accounts(liquidity_accounts.values().copied()),
+                        can_read_all_ledger_accounts(),
+                        can_read_all_accounts(),
+                    ],
+                })
+                .insert(RoleBinding {
+                    id: Bytes::copy_from_slice(role_id.as_bytes()),
+                    owner: Bytes::copy_from_slice(liquidity_key.public_key()),
+                    name: "m10.fx.liquidity".to_string(),
+                    role: Bytes::copy_from_slice(role_id.as_bytes()),
+                    subjects: vec![Bytes::copy_from_slice(liquidity_key.public_key())],
+                    expressions: vec![],
+                    is_universal: false,
+                }),
+            vec![],
+        )
+        .await?;
     info!(%role_id, "Created role & role-binding");
 
     // Write config
@@ -337,7 +301,7 @@ async fn try_setup(
                 (
                     currency,
                     LiquidityConfig {
-                        account: hex::encode(&account.to_be_bytes()),
+                        account,
                         base_rate,
                         key_pair: PathBuf::from("./liquidity.pkcs8"),
                     },
@@ -352,97 +316,60 @@ async fn try_setup(
     Ok(())
 }
 
-async fn try_initiate(
-    key_pair: impl Signer,
-    mut client: LedgerClient,
-    initiate: Initiate,
-) -> anyhow::Result<()> {
-    let from = AccountId::try_from_be_slice(&hex::decode(&initiate.from)?)?;
-    let to = AccountId::try_from_be_slice(&hex::decode(&initiate.to)?)?;
-    let indexed_account = client
-        .get_indexed_account(
-            key_pair
-                .sign_request(GetAccountRequest {
-                    id: from.to_be_bytes().to_vec(),
-                })
-                .await?,
-        )
-        .await?;
-    let from_instrument = indexed_account.instrument.unwrap();
-
-    // Submit request
-    let event = Event::Request(Request {
-        from,
-        to,
-        amount: Decimal::new(initiate.amount as i64, from_instrument.decimal_places),
-    });
+async fn try_initiate(client: M10Client<Ed25519>, initiate: Initiate) -> anyhow::Result<()> {
+    let from_account = client.get_account(initiate.from).await?;
     let context_id = fastrand::u64(..).to_be_bytes().to_vec();
     let context_hex = hex::encode(&context_id);
-    let req = key_pair
-        .sign_request(LedgerClient::transaction_request(
-            sdk::InvokeAction {
-                name: FX_SWAP_ACTION.to_string(),
-                from_account: from.to_be_bytes().to_vec(),
-                target: Some(sdk::Target {
-                    target: Some(sdk::target::Target::AnyAccount(())),
-                }),
-                payload: serde_json::to_vec(&event)?,
-            },
-            context_id.clone(),
-        ))
-        .await?;
+    let event = Event::Request(Request {
+        from: from_account.id,
+        to: initiate.to,
+        amount: Decimal::new(initiate.amount as i64, from_account.decimals),
+    });
 
-    let response = client.create_transaction(req).await?.tx_error()?;
-    let tx_id = response.tx_id;
+    // Submit request
+    let tx_id = client
+        .action(
+            ActionBuilder::for_all(FX_SWAP_ACTION.to_string(), from_account.id)
+                .payload(serde_json::to_vec(&event)?),
+            context_id.clone(),
+        )
+        .await?;
     info!(%tx_id, context_id=%context_hex, "Submitted transaction");
 
     // Wait for the quote
     let mut actions = client
         .observe_actions(
-            key_pair
-                .sign_request(ObserveActionsRequest {
-                    starting_from: Some(sdk::TxId { tx_id: tx_id + 1 }),
-                    name: FX_SWAP_ACTION.to_string(),
-                    involves_accounts: vec![from.to_be_bytes().to_vec()],
-                })
-                .await?,
+            AccountFilter::name(FX_SWAP_ACTION.to_string())
+                .starting_from(tx_id + 1)
+                .involves(from_account.id),
         )
         .await?;
 
     info!("Waiting for the proposed quote");
-    'outer: while let Some(Ok(sdk::FinalizedTransactions { transactions })) = actions.next().await {
-        for txn in transactions {
-            if let Some(Data::InvokeAction(action)) = txn.data() {
-                if txn
-                    .request
-                    .as_ref()
-                    .map(|r| r.context_id.clone())
-                    .unwrap_or_default()
-                    .as_slice()
-                    == &context_id
-                {
-                    let event = serde_json::from_slice::<Event>(&action.payload)
-                        .expect("invalid Event data");
+    while let Some(Ok(actions)) = actions.next().await {
+        for action in actions {
+            if action.context_id != context_id {
+                continue;
+            }
 
-                    if let Event::Quote(quote) = event {
-                        info!("Received quote {:#?}", quote);
-                        break 'outer;
-                    } else {
-                        panic!("Invalid Event type");
-                    }
-                }
+            let event =
+                serde_json::from_slice::<Event>(&action.payload).expect("invalid Event data");
+
+            if let Event::Quote(quote) = event {
+                info!("Received quote {:#?}", quote);
+                break;
+            } else {
+                panic!("Invalid Event type");
             }
         }
     }
 
-    info!(context_id = %hex::encode(context_id));
-
+    info!(context_id = %context_hex);
     Ok(())
 }
 
 async fn try_execute(
-    key_pair: impl Signer,
-    mut client: LedgerClient,
+    client: &M10Client<Ed25519>,
     execute: ExecuteQuote,
     quote: Quote,
     context_id: Vec<u8>,
@@ -452,16 +379,13 @@ async fn try_execute(
         quote.request.from, quote.intermediary
     );
     let amount = quote.rate * quote.request.amount;
-    let req = key_pair
-        .sign_request(LedgerClient::transaction_request(
-            sdk::CreateTransfer {
-                transfer_steps: vec![TransferStep {
-                    from_account_id: quote.request.from.to_be_bytes().to_vec(),
-                    to_account_id: quote.intermediary.to_be_bytes().to_vec(),
-                    amount: amount.try_into()?,
-                    metadata: vec![Any {
-                        type_url: FX_SWAP_METADATA.to_string(),
-                        value: serde_json::to_vec(&Event::Execute(Execute {
+    let tx_id = client
+        .transfer(
+            TransferBuilder::new().step(
+                StepBuilder::new(quote.request.from, quote.intermediary, amount.try_into()?)
+                    .custom_metadata(
+                        FX_SWAP_METADATA,
+                        serde_json::to_vec(&Event::Execute(Execute {
                             request: quote.request,
                             valid_until: (SystemTime::now()
                                 + Duration::from_secs(execute.valid_for.unwrap_or(300)))
@@ -471,16 +395,12 @@ async fn try_execute(
                             upper_limit: (Decimal::one() + execute.margin) * quote.rate,
                             lower_limits: (Decimal::one() - execute.margin) * quote.rate,
                         }))?,
-                    }],
-                }],
-            },
+                    ),
+            ),
             context_id.clone(),
-        ))
-        .await
-        .unwrap();
-
-    let tx_id = client.create_transaction(req).await?.tx_error()?.tx_id;
-    info!("Transfer success txId={}", tx_id);
+        )
+        .await?;
+    info!(%tx_id, "Transfer success");
     Ok(())
 }
 
@@ -488,120 +408,74 @@ fn root_key() -> Ed25519 {
     Ed25519::from_pkcs8(&hex::decode(TEST_ROOT_KEY).unwrap()).unwrap()
 }
 
-async fn sign_and_execute(
-    client: &mut LedgerClient,
-    key_pair: &impl Signer,
-    data: impl Into<Data>,
-) -> anyhow::Result<TransactionResponse> {
-    let req = LedgerClient::transaction_request(data, vec![]);
-    let signed_req = key_pair.sign_request(req).await?;
-    let response = client.create_transaction(signed_req).await?.tx_error()?;
-    Ok(response)
-}
-
 async fn create_account(
-    client: &mut LedgerClient,
-    key_pair: &impl Signer,
-    parent_account: &[u8],
+    client: &M10Client<Ed25519>,
+    parent_account: AccountId,
     owner: &[u8],
     name: String,
     funding: u64,
 ) -> anyhow::Result<AccountId> {
     // Create ledger account
-    let response = sign_and_execute(
-        client,
-        key_pair,
-        sdk::CreateLedgerAccount {
-            parent_id: parent_account.to_vec(),
-            issuance: false,
-            frozen: false,
-            instrument: None,
-        },
-    )
-    .await?;
-    let account_id = AccountId::try_from_be_slice(&response.account_created)?;
-    info!(account_id = %hex::encode(account_id.to_be_bytes()), "Created account");
+    let (_tx_id, account_id) = client.create_account(parent_account, false, vec![]).await?;
+    info!(%account_id, "Created account");
 
     // Register RBAC resource
     info!("Registering RBAC document");
-    sign_and_execute(
-        client,
-        key_pair,
-        DocumentOperations {
-            operations: vec![Operation::insert(Account {
-                owner: owner.to_vec(),
-                profile_image_url: String::new(),
-                name: name.clone(),
-                public_name: name,
-                id: response.account_created.clone(),
-            })],
-        },
-    )
-    .await?;
-
-    // Create role & role-binding for basic accounts
     let role_id = Uuid::new_v4();
-    sign_and_execute(
-        client,
-        key_pair,
-        DocumentOperations {
-            operations: vec![Operation::insert(Role {
-                id: Bytes::copy_from_slice(&role_id.into_bytes()),
-                owner: Bytes::copy_from_slice(owner),
-                name: "m10.fx.account".to_string(),
-                rules: vec![
-                    can_read_and_transact_accounts(once(&account_id)),
-                    can_read_and_transact_ledger_accounts(once(&account_id)),
-                ],
-            })],
-        },
-    )
-    .await?;
-    sign_and_execute(
-        client,
-        key_pair,
-        DocumentOperations {
-            operations: vec![Operation::insert(RoleBinding {
-                id: Bytes::copy_from_slice(&role_id.into_bytes()),
-                owner: Bytes::copy_from_slice(owner),
-                name: "m10.fx.account".to_string(),
-                role: Bytes::copy_from_slice(role_id.as_bytes()),
-                subjects: vec![Bytes::copy_from_slice(owner)],
-                expressions: vec![],
-                is_universal: false,
-            })],
-        },
-    )
-    .await?;
+    client
+        .documents(
+            DocumentBuilder::default()
+                // Add Account RBAC resource
+                .insert(Account {
+                    owner: owner.to_vec(),
+                    profile_image_url: String::new(),
+                    name: name.clone(),
+                    public_name: name,
+                    id: account_id.to_vec(),
+                })
+                // Create role & role-binding for basic accounts
+                .insert(Role {
+                    id: Bytes::copy_from_slice(&role_id.into_bytes()),
+                    owner: Bytes::copy_from_slice(owner),
+                    name: "m10.fx.account".to_string(),
+                    rules: vec![
+                        can_read_and_transact_accounts(once(account_id)),
+                        can_read_and_transact_ledger_accounts(once(account_id)),
+                    ],
+                })
+                .insert(RoleBinding {
+                    id: Bytes::copy_from_slice(&role_id.into_bytes()),
+                    owner: Bytes::copy_from_slice(owner),
+                    name: "m10.fx.account".to_string(),
+                    role: Bytes::copy_from_slice(role_id.as_bytes()),
+                    subjects: vec![Bytes::copy_from_slice(owner)],
+                    expressions: vec![],
+                    is_universal: false,
+                }),
+            vec![],
+        )
+        .await?;
     info!(%role_id, "Created role & role-binding");
-    // ledger-accounts
 
+    // ledger-accounts
     if funding > 0 {
         // Fund account
         info!(%funding, "Funding account");
-        sign_and_execute(
-            client,
-            key_pair,
-            sdk::CreateTransfer {
-                transfer_steps: vec![TransferStep {
-                    from_account_id: parent_account.to_vec(),
-                    to_account_id: response.account_created.clone(),
-                    amount: funding,
-                    metadata: vec![],
-                }],
-            },
-        )
-        .await?;
+        client
+            .transfer(
+                TransferBuilder::new().step(StepBuilder::new(parent_account, account_id, funding)),
+                vec![],
+            )
+            .await?;
     }
 
     Ok(account_id)
 }
 
-fn can_read_and_transact_accounts<'a>(accounts: impl Iterator<Item = &'a AccountId>) -> Rule {
+fn can_read_and_transact_accounts(accounts: impl Iterator<Item = AccountId>) -> Rule {
     Rule {
         collection: Collection::Accounts.to_string(),
         instance_keys: accounts
-            .copied()
             .map(AccountId::to_be_bytes)
             .map(|b| Bytes::copy_from_slice(&b))
             .map(Value::BytesValue)
@@ -612,13 +486,10 @@ fn can_read_and_transact_accounts<'a>(accounts: impl Iterator<Item = &'a Account
     }
 }
 
-fn can_read_and_transact_ledger_accounts<'a>(
-    accounts: impl Iterator<Item = &'a AccountId>,
-) -> Rule {
+fn can_read_and_transact_ledger_accounts(accounts: impl Iterator<Item = AccountId>) -> Rule {
     Rule {
         collection: "ledger-accounts".to_string(),
         instance_keys: accounts
-            .copied()
             .map(AccountId::to_be_bytes)
             .map(|b| Bytes::copy_from_slice(&b))
             .map(Value::BytesValue)
