@@ -1,5 +1,4 @@
 use config::Environment;
-use m10_sdk::account::AccountId;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -23,7 +22,7 @@ fn default_address() -> String {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LiquidityConfig {
     /// Account ID of the liquidity provider for that currency
-    pub account: AccountId,
+    pub account: String,
     /// Currency value in base amount (~ USD)
     pub base_rate: Decimal,
     /// Liquidity key pair

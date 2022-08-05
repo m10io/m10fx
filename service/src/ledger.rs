@@ -6,7 +6,7 @@ use m10_sdk::account::AccountId;
 use m10_sdk::client::Channel;
 use m10_sdk::{
     AccountFilter, Action, ActionBuilder, Ed25519, M10Client, MetadataExt, StepBuilder, Transfer,
-    TransferBuilder,
+    TransferBuilder, WithContext,
 };
 use rust_decimal::Decimal;
 use service::{FxSwapMetadata, FX_SWAP_ACTION};
@@ -39,7 +39,7 @@ impl Ledger {
         Ok(Self {
             currency: currency.to_lowercase(),
             client,
-            liquidity: config.account,
+            liquidity: AccountId::try_from_be_slice(&hex::decode(&config.account)?)?,
             base_rate: config.base_rate,
         })
     }
@@ -193,12 +193,13 @@ async fn swap_task(
                 to_ledger
                     .client
                     .transfer(
-                        TransferBuilder::new().step(StepBuilder::new(
-                            to_ledger.liquidity,
-                            execute.request.to,
-                            amount,
-                        )),
-                        context_id.clone(),
+                        TransferBuilder::new()
+                            .step(StepBuilder::new(
+                                to_ledger.liquidity,
+                                execute.request.to,
+                                amount,
+                            ))
+                            .context_id(context_id.clone()),
                     )
                     .await?;
 

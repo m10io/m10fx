@@ -164,19 +164,10 @@ cargo run --bin cli initiate -a 1000 -f 00000000004a00000000000000000001 -t 0400
 INFO Initiate { key_pair: "./alice.pkcs8", from: "00000000004a00000000000000000001", to: "04000000003200000000000000000001", amount: 1000 }
 INFO initiate: Submitted transaction tx_id=5996250000 context_id=713f6414ca45d04f
 INFO initiate: Waiting for the proposed quote
-INFO initiate: Received quote Quote {
-    request: Request {
-        from: [4; 52],
-        to: [0; 76],
-        amount: 10.00,
-    },
-    rate: 0.9,
-    intermediary: [4; 51],
-}
-INFO initiate: context_id=713f6414ca45d04f
+INFO initiate: Received quote from=00000000004a00000000000000000001 to=04000000003200000000000000000001 amount=10.00 rate=0.9 intermediary=04000000003300000000000000000001 context_id=713f6414ca45d04f
 ```
 
-The returned quote indicates a quote for `1 USD -> 0.9 EUR` & will be performed using `04000000003300000000000000000001 (=[4; 51])` as a liquidity provider for USD.
+The returned quote indicates a quote for `1 USD -> 0.9 EUR` & will be performed using `04000000003300000000000000000001` as a liquidity provider for USD.
 The quote is attached to a ledger context ID `713f6414ca45d04f`. This allows multiple independent transactions on the M10 ledger to be tied together.
 
 ## Executing FX swaps
@@ -195,7 +186,7 @@ Finally, a validity period can be specified using the `valid-for` parameter, det
 ```shell
 cargo run --bin cli -- execute -k ./alice.pkcs8 --margin 0.10 -v 5 -c 713f6414ca45d04f 
 INFO ExecuteQuote { key_pair: "./alice.pkcs8", context_id: "713f6414ca45d04f", margin: 0.10, valid_for: Some(300) }
-INFO execute: Transferring from [4; 52] -> [4; 51]
+INFO execute: Transferring from 00000000004a00000000000000000001 -> 04000000003200000000000000000001
 INFO execute: Transfer success txId=6003570000
 INFO Waiting for swap confirmation
 ...

@@ -9,8 +9,8 @@ use m10_sdk::client::M10Client;
 use m10_sdk::error::M10Error;
 use m10_sdk::prost::bytes::Bytes;
 use m10_sdk::{
-    sdk, AccountFilter, ActionBuilder, ActionsFilter, Collection, DocumentBuilder, Ed25519, Signer,
-    StepBuilder, TransferBuilder, TxnFilter,
+    sdk, AccountBuilder, AccountFilter, ActionBuilder, ActionsFilter, Collection, DocumentBuilder,
+    Ed25519, Signer, StepBuilder, TransferBuilder, TxnFilter, WithContext,
 };
 use rust_decimal::prelude::One;
 use rust_decimal::Decimal;
@@ -286,7 +286,6 @@ async fn try_setup(client: M10Client<Ed25519>, setup: Setup) -> anyhow::Result<(
                     expressions: vec![],
                     is_universal: false,
                 }),
-            vec![],
         )
         .await?;
     info!(%role_id, "Created role & role-binding");
@@ -301,7 +300,7 @@ async fn try_setup(client: M10Client<Ed25519>, setup: Setup) -> anyhow::Result<(
                 (
                     currency,
                     LiquidityConfig {
-                        account,
+                        account: hex::encode(&account.to_be_bytes()),
                         base_rate,
                         key_pair: PathBuf::from("./liquidity.pkcs8"),
                     },
@@ -356,8 +355,12 @@ async fn try_initiate(client: M10Client<Ed25519>, initiate: Initiate) -> anyhow:
                 serde_json::from_slice::<Event>(&action.payload).expect("invalid Event data");
 
             if let Event::Quote(quote) = event {
-                info!("Received quote {:#?}", quote);
-                break;
+                info!(
+                    "Received quote {} context_id={}",
+                    quote,
+                    hex::encode(context_id)
+                );
+                return Ok(());
             } else {
                 panic!("Invalid Event type");
             }
@@ -381,23 +384,24 @@ async fn try_execute(
     let amount = quote.rate * quote.request.amount;
     let tx_id = client
         .transfer(
-            TransferBuilder::new().step(
-                StepBuilder::new(quote.request.from, quote.intermediary, amount.try_into()?)
-                    .custom_metadata(
-                        FX_SWAP_METADATA,
-                        serde_json::to_vec(&Event::Execute(Execute {
-                            request: quote.request,
-                            valid_until: (SystemTime::now()
-                                + Duration::from_secs(execute.valid_for.unwrap_or(300)))
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs(),
-                            upper_limit: (Decimal::one() + execute.margin) * quote.rate,
-                            lower_limits: (Decimal::one() - execute.margin) * quote.rate,
-                        }))?,
-                    ),
-            ),
-            context_id.clone(),
+            TransferBuilder::new()
+                .step(
+                    StepBuilder::new(quote.request.from, quote.intermediary, amount.try_into()?)
+                        .custom_metadata(
+                            FX_SWAP_METADATA,
+                            serde_json::to_vec(&Event::Execute(Execute {
+                                request: quote.request,
+                                valid_until: (SystemTime::now()
+                                    + Duration::from_secs(execute.valid_for.unwrap_or(300)))
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs(),
+                                upper_limit: (Decimal::one() + execute.margin) * quote.rate,
+                                lower_limits: (Decimal::one() - execute.margin) * quote.rate,
+                            }))?,
+                        ),
+                )
+                .context_id(context_id.clone()),
         )
         .await?;
     info!(%tx_id, "Transfer success");
@@ -416,7 +420,9 @@ async fn create_account(
     funding: u64,
 ) -> anyhow::Result<AccountId> {
     // Create ledger account
-    let (_tx_id, account_id) = client.create_account(parent_account, false, vec![]).await?;
+    let (_tx_id, account_id) = client
+        .create_account(AccountBuilder::parent(parent_account))
+        .await?;
     info!(%account_id, "Created account");
 
     // Register RBAC resource
@@ -452,7 +458,6 @@ async fn create_account(
                     expressions: vec![],
                     is_universal: false,
                 }),
-            vec![],
         )
         .await?;
     info!(%role_id, "Created role & role-binding");
@@ -462,10 +467,11 @@ async fn create_account(
         // Fund account
         info!(%funding, "Funding account");
         client
-            .transfer(
-                TransferBuilder::new().step(StepBuilder::new(parent_account, account_id, funding)),
-                vec![],
-            )
+            .transfer(TransferBuilder::new().step(StepBuilder::new(
+                parent_account,
+                account_id,
+                funding,
+            )))
             .await?;
     }
 
