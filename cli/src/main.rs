@@ -186,16 +186,14 @@ async fn try_setup(client: M10Client<Ed25519>, setup: Setup) -> anyhow::Result<(
     // Scan for all currencies
     for i in 0..256 {
         let root_id = AccountId::from_root_account_index(i)?;
-        match client.get_account(root_id).await {
+        match client.get_account_info(root_id).await {
             Ok(account) => {
                 let currency = account.code.to_lowercase();
                 if !setup.currencies.contains(&currency) {
                     continue;
                 }
                 info!(%account.id, %currency, "Found account");
-                if setup.currencies.contains(&currency) {
-                    accounts.push(account);
-                }
+                accounts.push(account);
             }
             Err(M10Error::Status(status)) if status.code() as usize == 5 => {
                 // NOT FOUND
@@ -210,7 +208,7 @@ async fn try_setup(client: M10Client<Ed25519>, setup: Setup) -> anyhow::Result<(
     // Create accounts & account docs for all currencies
     let mut liquidity_accounts = HashMap::new();
     for account in accounts {
-        let currency = account.code;
+        let currency = account.code.to_lowercase();
         async {
             let account_id = create_account(
                 &client,
@@ -224,7 +222,7 @@ async fn try_setup(client: M10Client<Ed25519>, setup: Setup) -> anyhow::Result<(
 
             liquidity_accounts.insert(currency.clone(), account_id);
 
-            if currency.to_lowercase() == setup.currencies[0].to_lowercase() {
+            if currency == setup.currencies[0].to_lowercase() {
                 // Create an account for alice
                 let account_id = create_account(
                     &client,
@@ -235,10 +233,10 @@ async fn try_setup(client: M10Client<Ed25519>, setup: Setup) -> anyhow::Result<(
                 )
                 .instrument(info_span!("Alice"))
                 .await?;
-                info!(account_id = %hex::encode(account_id.to_be_bytes()), "Created Alice {} account", currency);
+                info!(%account_id, "Created Alice's account");
             }
 
-            if currency.to_lowercase() == setup.currencies[1].to_lowercase() {
+            if currency == setup.currencies[1].to_lowercase() {
                 let account_id = create_account(
                     &client,
                     account.id,
@@ -248,7 +246,7 @@ async fn try_setup(client: M10Client<Ed25519>, setup: Setup) -> anyhow::Result<(
                 )
                 .instrument(info_span!("Bob"))
                 .await?;
-                info!(account_id = %hex::encode(account_id.to_be_bytes()), "Created Bob {} account", currency);
+                info!(%account_id, "Created Bob's account");
             }
 
             Result::<(), anyhow::Error>::Ok(())
@@ -273,8 +271,6 @@ async fn try_setup(client: M10Client<Ed25519>, setup: Setup) -> anyhow::Result<(
                     rules: vec![
                         can_read_and_transact_ledger_accounts(liquidity_accounts.values().copied()),
                         can_read_and_transact_accounts(liquidity_accounts.values().copied()),
-                        can_read_all_ledger_accounts(),
-                        can_read_all_accounts(),
                     ],
                 })
                 .insert(RoleBinding {
@@ -300,7 +296,7 @@ async fn try_setup(client: M10Client<Ed25519>, setup: Setup) -> anyhow::Result<(
                 (
                     currency,
                     LiquidityConfig {
-                        account: hex::encode(&account.to_be_bytes()),
+                        account: account.to_string(),
                         base_rate,
                         key_pair: PathBuf::from("./liquidity.pkcs8"),
                     },
@@ -316,7 +312,7 @@ async fn try_setup(client: M10Client<Ed25519>, setup: Setup) -> anyhow::Result<(
 }
 
 async fn try_initiate(client: M10Client<Ed25519>, initiate: Initiate) -> anyhow::Result<()> {
-    let from_account = client.get_account(initiate.from).await?;
+    let from_account = client.get_account_info(initiate.from).await?;
     let context_id = fastrand::u64(..).to_be_bytes().to_vec();
     let context_hex = hex::encode(&context_id);
     let event = Event::Request(Request {
@@ -355,11 +351,7 @@ async fn try_initiate(client: M10Client<Ed25519>, initiate: Initiate) -> anyhow:
                 serde_json::from_slice::<Event>(&action.payload).expect("invalid Event data");
 
             if let Event::Quote(quote) = event {
-                info!(
-                    "Received quote {} context_id={}",
-                    quote,
-                    hex::encode(context_id)
-                );
+                info!(context_id=%context_hex, "Received quote {}", quote);
                 return Ok(());
             } else {
                 panic!("Invalid Event type");
@@ -367,7 +359,6 @@ async fn try_initiate(client: M10Client<Ed25519>, initiate: Initiate) -> anyhow:
         }
     }
 
-    info!(context_id = %context_hex);
     Ok(())
 }
 
@@ -503,22 +494,6 @@ fn can_read_and_transact_ledger_accounts(accounts: impl Iterator<Item = AccountI
             .map(|value| sdk::Value { value })
             .collect(),
         verbs: vec![Verb::Read as i32, Verb::Transact as i32],
-    }
-}
-
-fn can_read_all_ledger_accounts() -> Rule {
-    Rule {
-        collection: "ledger-accounts".to_string(),
-        instance_keys: vec![],
-        verbs: vec![Verb::Read as i32],
-    }
-}
-
-fn can_read_all_accounts() -> Rule {
-    Rule {
-        collection: Collection::Accounts.to_string(),
-        instance_keys: vec![],
-        verbs: vec![Verb::Read as i32],
     }
 }
 

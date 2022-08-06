@@ -45,8 +45,8 @@ impl Ledger {
     }
 
     async fn get_currencies(&self, request: &Request) -> anyhow::Result<(String, String)> {
-        let from = self.client.get_account(request.from).await?;
-        let to = self.client.get_account(request.to).await?;
+        let from = self.client.get_account_info(request.from).await?;
+        let to = self.client.get_account_info(request.to).await?;
         Ok((from.code.to_lowercase(), to.code.to_lowercase()))
     }
 
