@@ -51,7 +51,7 @@ impl Ledger {
     }
 
     pub async fn observe_transfers(self, db: LedgerDB) -> anyhow::Result<()> {
-        // Sign the request to observe all actions named `FX_SWAP_ACTION`
+        // Sign the request to observe all transfer from & to the liquidity account
         let mut transfers = self
             .client
             .observe_transfers(AccountFilter::default().involves(self.liquidity))
