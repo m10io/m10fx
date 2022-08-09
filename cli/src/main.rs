@@ -10,7 +10,7 @@ use m10_sdk::error::M10Error;
 use m10_sdk::prost::bytes::Bytes;
 use m10_sdk::{
     sdk, AccountBuilder, AccountFilter, ActionBuilder, ActionsFilter, Collection, DocumentBuilder,
-    Ed25519, Signer, StepBuilder, TransferBuilder, TxnFilter, WithContext,
+    Ed25519, Signer, StepBuilder, TransferBuilder, TxId, TxnFilter, WithContext,
 };
 use rust_decimal::prelude::One;
 use rust_decimal::Decimal;
@@ -140,20 +140,20 @@ async fn main() -> anyhow::Result<()> {
                     panic!("Already executed");
                 }
             };
+            let from = quote.request.from;
 
-            let mut stream = client
-                .observe_actions(
-                    AccountFilter::name(FX_SWAP_ACTION.to_string())
-                        .involves(quote.request.from)
-                        .starting_from(action.tx_id + 1),
-                )
-                .await?;
-
-            try_execute(&client, execute, quote, context_id.clone())
+            let tx_id = try_execute(&client, execute, quote, context_id.clone())
                 .instrument(info_span!("execute"))
                 .await?;
 
             // Wait for confirmation
+            let mut stream = client
+                .observe_actions(
+                    AccountFilter::name(FX_SWAP_ACTION.to_string())
+                        .involves(from)
+                        .starting_from(tx_id + 1),
+                )
+                .await?;
             info!("Waiting for swap confirmation");
             while let Some(Ok(actions)) = stream.next().await {
                 for action in actions {
@@ -338,7 +338,7 @@ async fn try_execute(
     execute: ExecuteQuote,
     quote: Quote,
     context_id: Vec<u8>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<TxId> {
     info!(
         "Transferring from {} -> {}",
         quote.request.from, quote.intermediary
@@ -367,7 +367,7 @@ async fn try_execute(
         )
         .await?;
     info!(%tx_id, "Transfer success");
-    Ok(())
+    Ok(tx_id)
 }
 
 fn root_key() -> Ed25519 {
