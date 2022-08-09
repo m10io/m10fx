@@ -65,7 +65,6 @@ impl Ledger {
                 }
             }
         }
-
         Ok(())
     }
 
@@ -146,7 +145,6 @@ impl Ledger {
                 }
             }
         }
-
         Ok(())
     }
 }

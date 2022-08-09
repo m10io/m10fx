@@ -18,7 +18,6 @@ use service::config::{Config, LiquidityConfig};
 use service::event::{Event, Execute, Quote, Request};
 use service::{FX_SWAP_ACTION, FX_SWAP_METADATA};
 use std::collections::HashMap;
-use std::iter::once;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{error, info, info_span, Instrument};
@@ -259,33 +258,6 @@ async fn try_setup(client: M10Client<Ed25519>, setup: Setup) -> anyhow::Result<(
         return Ok(());
     }
 
-    // Setup role & role-binding
-    let role_id = Uuid::new_v4();
-    client
-        .documents(
-            DocumentBuilder::default()
-                .insert(Role {
-                    id: Bytes::copy_from_slice(&role_id.into_bytes()),
-                    owner: Bytes::copy_from_slice(liquidity_key.public_key()),
-                    name: "m10.fx.liquidity".to_string(),
-                    rules: vec![
-                        can_read_and_transact_ledger_accounts(liquidity_accounts.values().copied()),
-                        can_read_and_transact_accounts(liquidity_accounts.values().copied()),
-                    ],
-                })
-                .insert(RoleBinding {
-                    id: Bytes::copy_from_slice(role_id.as_bytes()),
-                    owner: Bytes::copy_from_slice(liquidity_key.public_key()),
-                    name: "m10.fx.liquidity".to_string(),
-                    role: Bytes::copy_from_slice(role_id.as_bytes()),
-                    subjects: vec![Bytes::copy_from_slice(liquidity_key.public_key())],
-                    expressions: vec![],
-                    is_universal: false,
-                }),
-        )
-        .await?;
-    info!(%role_id, "Created role & role-binding");
-
     // Write config
     let toml_string = toml::to_string(&Config {
         address: DEFAULT_LEDGER_URL.to_string(),
@@ -358,7 +330,6 @@ async fn try_initiate(client: M10Client<Ed25519>, initiate: Initiate) -> anyhow:
             }
         }
     }
-
     Ok(())
 }
 
@@ -436,8 +407,8 @@ async fn create_account(
                     owner: Bytes::copy_from_slice(owner),
                     name: "m10.fx.account".to_string(),
                     rules: vec![
-                        can_read_and_transact_accounts(once(account_id)),
-                        can_read_and_transact_ledger_accounts(once(account_id)),
+                        can_read_and_transact_accounts(account_id),
+                        can_read_and_transact_ledger_accounts(account_id),
                     ],
                 })
                 .insert(RoleBinding {
@@ -469,30 +440,26 @@ async fn create_account(
     Ok(account_id)
 }
 
-fn can_read_and_transact_accounts(accounts: impl Iterator<Item = AccountId>) -> Rule {
+fn can_read_and_transact_accounts(account: AccountId) -> Rule {
     Rule {
         collection: Collection::Accounts.to_string(),
-        instance_keys: accounts
-            .map(AccountId::to_be_bytes)
-            .map(|b| Bytes::copy_from_slice(&b))
-            .map(Value::BytesValue)
-            .map(Some)
-            .map(|value| sdk::Value { value })
-            .collect(),
+        instance_keys: vec![sdk::Value {
+            value: Some(Value::BytesValue(Bytes::copy_from_slice(
+                &account.to_be_bytes(),
+            ))),
+        }],
         verbs: vec![Verb::Read as i32, Verb::Transact as i32],
     }
 }
 
-fn can_read_and_transact_ledger_accounts(accounts: impl Iterator<Item = AccountId>) -> Rule {
+fn can_read_and_transact_ledger_accounts(account: AccountId) -> Rule {
     Rule {
         collection: "ledger-accounts".to_string(),
-        instance_keys: accounts
-            .map(AccountId::to_be_bytes)
-            .map(|b| Bytes::copy_from_slice(&b))
-            .map(Value::BytesValue)
-            .map(Some)
-            .map(|value| sdk::Value { value })
-            .collect(),
+        instance_keys: vec![sdk::Value {
+            value: Some(Value::BytesValue(Bytes::copy_from_slice(
+                &account.to_be_bytes(),
+            ))),
+        }],
         verbs: vec![Verb::Read as i32, Verb::Transact as i32],
     }
 }
